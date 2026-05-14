@@ -31,6 +31,8 @@ PORTS       = [str(s["port"]) for s in SERVICES.values()]
 REFRESH     = 3   # seconds between polls
 DEFAULT_LOG = "/var/log/stt_monitor.log"
 
+_last_log_line: dict[str, str] = {}  # dedup container log alerts
+
 
 # ── argument parsing ─────────────────────────────────────────────────────────
 
@@ -112,22 +114,23 @@ def get_connections():
 
 def get_docker_stats():
     stats = {}
-    try:
-        out = subprocess.check_output(
-            ["docker", "stats", "--no-stream", "--format",
-             "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"]
-            + list(SERVICES.keys()),
-            stderr=subprocess.DEVNULL
-        ).decode()
-        for line in out.strip().splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 6:
-                stats[parts[0]] = {
-                    "cpu": parts[1], "mem": parts[2],
-                    "net": parts[3], "block": parts[4], "pids": parts[5],
-                }
-    except Exception:
-        pass
+    for name in SERVICES:
+        try:
+            out = subprocess.check_output(
+                ["docker", "stats", "--no-stream", "--format",
+                 "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}",
+                 name],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            if out:
+                parts = out.split("\t")
+                if len(parts) >= 6:
+                    stats[name] = {
+                        "cpu": parts[1], "mem": parts[2],
+                        "net": parts[3], "block": parts[4], "pids": parts[5],
+                    }
+        except Exception:
+            pass
     return stats
 
 
@@ -182,14 +185,20 @@ def write_log_snapshot(logger, connections, docker_stats, statuses, iteration):
         logger.log(level, msg)
 
     for name, info in SERVICES.items():
-        for line in get_recent_logs(name, lines=10):
+        lines = get_recent_logs(name, lines=10)
+        for line in reversed(lines):
             clean = strip_ansi(line).strip()
             if not clean:
                 continue
-            if "ERROR" in clean or "CRITICAL" in clean:
-                logger.error(f"[{info['label']}] {clean[:200]}")
-            elif "WARN" in clean:
-                logger.warning(f"[{info['label']}] {clean[:200]}")
+            if "ERROR" in clean or "CRITICAL" in clean or "WARN" in clean:
+                if _last_log_line.get(name) == clean:
+                    break  # same tail as last snapshot — nothing new
+                _last_log_line[name] = clean
+                if "ERROR" in clean or "CRITICAL" in clean:
+                    logger.error(f"[{info['label']}] {clean[:200]}")
+                else:
+                    logger.warning(f"[{info['label']}] {clean[:200]}")
+                break
 
 
 # ── terminal display ──────────────────────────────────────────────────────────
