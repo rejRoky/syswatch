@@ -28,7 +28,7 @@ SERVICES = {
 }
 
 PORTS       = [str(s["port"]) for s in SERVICES.values()]
-REFRESH     = 3   # seconds between polls
+REFRESH     = 1   # seconds between polls
 DEFAULT_LOG = "/var/log/stt_monitor.log"
 
 _last_log_line: dict[str, str] = {}  # dedup container log alerts
